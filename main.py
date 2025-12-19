@@ -2,14 +2,23 @@ import streamlit as st
 import time
 from dotenv import load_dotenv
 from openai import OpenAI
+import concurrent.futures
+
+import nltk
+try:
+    nltk.download('stopwords', quiet=True)
+    from nltk.corpus import stopwords
+    stopwords.words('english') # Accessing it once forces it to load fully
+except:
+    pass
 
 load_dotenv()
 model = "gpt-5-mini"
 client = OpenAI()
 
 
-source = "./data/RealCostOfHS2.txt"
-source_folder = "./data"
+SOURCE_FILE = "./data/RealCostOfHS2.txt"
+SOURCE_FOLDER = "./data"
 embed_model_name = "BAAI/bge-small-en-v1.5"
 
 query = "What is HS2 and Why is it important?"
@@ -106,11 +115,11 @@ def rag_qdrant(source_folder, query):
     return response
 
 
-def run_pipeline_wrapper(func, query):
-    """Runs a RAG function and captures time/result safely."""
+def run_pipeline_wrapper(func, source_arg, query):
     start = time.time()
     try:
-        response = func(query)
+        # We pass source_arg (folder or file) AND query here
+        response = func(source_arg, query)
         error = None
     except Exception as e:
         response = None
@@ -141,58 +150,56 @@ if st.button("Run All Comparisons", type="primary"):
     with col3: st.write("⏳ Running Local...")
     with col4: st.write("⏳ Running Qdrant...")    
     
-    # --- 1. MANUAL ---
+    # Execute in Parallel
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+
+        # 1. Manual takes SOURCE_FILE
+        future_manual = executor.submit(run_pipeline_wrapper, rag_manual, SOURCE_FILE, query_input)
+        
+        # 2, 3, 4 take SOURCE_FOLDER
+        future_openai = executor.submit(run_pipeline_wrapper, rag_llamaIndex_openai_embed, SOURCE_FOLDER, query_input)
+        future_local = executor.submit(run_pipeline_wrapper, rag_llamaIndex_local_embed, SOURCE_FOLDER, query_input)
+        future_qdrant = executor.submit(run_pipeline_wrapper, rag_qdrant, SOURCE_FOLDER, query_input)        
+        # Wait for all to complete
+        res_manual = future_manual.result()
+        res_openai = future_openai.result()
+        res_local = future_local.result()
+        res_qdrant = future_qdrant.result()
+
+    # --- RENDER RESULTS (Main Thread) ---
+    
+    # Column 1: Manual
     with col1:
         st.subheader("1. Manual")
-        st.caption("Sklearn + Numpy")
-        with st.spinner("Processing..."):
-            start = time.time()
-            res = rag_manual(source, query_input)
-            end = time.time()
-        
-        st.metric("Latency", f"{end-start:.2f}s")
-        st.write("❌ Fragile code")
-        st.write("❌ Manual Math")
-        st.success(res)
+        if res_manual['error']:
+            st.error(res_manual['error'])
+        else:
+            st.metric("Latency", f"{res_manual['time']:.2f}s")
+            st.success(res_manual['resp'])
 
-    # --- 2. LI + OPENAI ---
+    # Column 2: OpenAI
     with col2:
         st.subheader("2. LlamaIndex + OpenAI Embedding")
-        st.caption("Standard LlamaIndex")
-        with st.spinner("Processing..."):
-            start = time.time()
-            res = rag_llamaIndex_openai_embed(source_folder=source_folder, query=query_input)
-            end = time.time()
-            
-        st.metric("Latency", f"{end-start:.2f}s")
-        st.write("✅ Easy Setup")
-        st.write("💰 Costs Money")
-        st.success(res)
+        if res_openai['error']:
+            st.error(res_openai['error'])
+        else:
+            st.metric("Latency", f"{res_openai['time']:.2f}s")
+            st.success(res_openai['resp'])
 
-    # --- 3. LI + LOCAL ---
+    # Column 3: Local
     with col3:
         st.subheader("3. LlamaIndex + Local Embedding")
-        st.caption("FastEmbed (CPU)")
-        with st.spinner("Processing..."):
-            start = time.time()
-            res = rag_llamaIndex_local_embed(source_folder=source_folder, query=query_input)
-            end = time.time()
-            
-        st.metric("Latency", f"{end-start:.2f}s")
-        st.write("✅ Free Embeds")
-        st.write("⚠️ RAM Only")
-        st.success(res)
+        if res_local['error']:
+            st.error(res_local['error'])
+        else:
+            st.metric("Latency", f"{res_local['time']:.2f}s")
+            st.success(res_local['resp'])
 
-    # --- 4. LI + QDRANT ---
+    # Column 4: Qdrant
     with col4:
-        st.subheader("4. LlamaIndex & VectorStore")
-        st.caption("Vector DB")
-        with st.spinner("Processing..."):
-            start = time.time()
-            res = rag_qdrant(source_folder=source_folder, query=query_input)
-            end = time.time()
-            
-        st.metric("Latency", f"{end-start:.2f}s")
-        st.write("✅ Production Ready")
-        st.write("✅ Scalable")
-        st.success(res)
+        st.subheader("4. LlamaIndex + Qdrant")
+        if res_qdrant['error']:
+            st.error(res_qdrant['error'])
+        else:
+            st.metric("Latency", f"{res_qdrant['time']:.2f}s")
+            st.success(res_qdrant['resp'])
